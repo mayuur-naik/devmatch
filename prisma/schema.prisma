@@ -7,31 +7,57 @@ generator client {
   provider = "prisma-client-js"
 }
 
+enum ApplicationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
 model User {
-  id          String          @id @default(uuid())
-  githubUser  String          @unique
-  name        String?
-  projects    Project[]       @relation("Owner")
-  joined      ProjectMember[]
+  id           String           @id @default(uuid())
+  githubUser   String           @unique
+  name         String?
+  avatarUrl    String?
+  projects     Project[]        @relation("Owner")
+  memberships  ProjectMember[]
+  applications Application[]
+  createdAt    DateTime         @default(now())
 }
 
 model Project {
-  id          String          @id @default(uuid())
-  title       String
-  description String
-  techStack   String          // Stored as comma-separated: "React, Node, Prisma"
-  repoUrl     String
-  ownerId     String
-  owner       User            @relation("Owner", fields: [ownerId], references: [id])
-  members     ProjectMember[]
-  createdAt   DateTime        @default(now())
+  id           String           @id @default(uuid())
+  title        String
+  description  String
+  techStack    String
+  repoUrl      String
+  ownerId      String
+  owner        User             @relation("Owner", fields: [ownerId], references: [id])
+  members      ProjectMember[]
+  applications Application[]
+  createdAt    DateTime         @default(now())
 }
 
 model ProjectMember {
   id        String   @id @default(uuid())
   userId    String
   projectId String
-  role      String   // e.g. "Frontend Contributor"
+  role      String
   user      User     @relation(fields: [userId], references: [id])
   project   Project  @relation(fields: [projectId], references: [id])
+
+  @@unique([userId, projectId])
+}
+
+model Application {
+  id        String            @id @default(uuid())
+  projectId String
+  userId    String
+  role      String
+  message   String?
+  status    String            @default("PENDING") // PENDING, ACCEPTED, REJECTED
+  project   Project           @relation(fields: [projectId], references: [id])
+  user      User              @relation(fields: [userId], references: [id])
+  createdAt DateTime          @default(now())
+
+  @@unique([userId, projectId])
 }

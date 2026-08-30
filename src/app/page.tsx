@@ -1,10 +1,15 @@
 import { prisma } from "@/lib/prisma";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import { joinProject } from "./actions";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
+  const session = await getServerSession(authOptions);
+  const currentGithubUser = (session?.user as any)?.githubUser;
+
   const projects = await prisma.project.findMany({
     include: {
       owner: true,
@@ -15,22 +20,45 @@ export default async function HomePage() {
 
   return (
     <main className="max-w-4xl mx-auto p-6 space-y-6">
-      <div className="flex justify-between items-center border-b pb-4">
+      <header className="flex justify-between items-center border-b pb-4">
         <div>
           <h1 className="text-2xl font-bold">DevMatch</h1>
           <p className="text-gray-500 text-sm">Build projects together & earn verified proof-of-work</p>
         </div>
-        <Link
-          href="/projects/new"
-          className="bg-blue-600 text-white px-4 py-2 rounded font-medium hover:bg-blue-700"
-        >
-          + Post Project
-        </Link>
-      </div>
+
+        <div className="flex items-center gap-3">
+          {session ? (
+            <>
+              <Link href={`/${currentGithubUser}`} className="text-sm font-semibold hover:underline">
+                @{currentGithubUser}
+              </Link>
+              <Link
+                href="/projects/new"
+                className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-blue-700"
+              >
+                + Post Project
+              </Link>
+              <a
+                href="/api/auth/signout"
+                className="text-xs text-gray-500 hover:text-black border px-2 py-1.5 rounded"
+              >
+                Sign Out
+              </a>
+            </>
+          ) : (
+            <a
+              href="/api/auth/signin/github"
+              className="bg-black text-white px-4 py-2 rounded text-sm font-medium hover:bg-gray-800"
+            >
+              Sign In with GitHub
+            </a>
+          )}
+        </div>
+      </header>
 
       <div className="grid gap-6">
         {projects.length === 0 && (
-          <p className="text-gray-500">No projects yet. Click "+ Post Project" to create one!</p>
+          <p className="text-gray-500">No projects yet. Sign in to post the first one!</p>
         )}
 
         {projects.map((project) => (
@@ -71,30 +99,24 @@ export default async function HomePage() {
                 {project.members.map((m) => `@${m.user.githubUser}`).join(", ") || "None yet"}
               </div>
 
-              {/* Quick join form */}
-              <form action={joinProject} className="flex gap-2">
-                <input type="hidden" name="projectId" value={project.id} />
-                <input
-                  type="text"
-                  name="githubUser"
-                  placeholder="Your GitHub username"
-                  required
-                  className="text-xs border rounded px-2 py-1"
-                />
-                <input
-                  type="text"
-                  name="role"
-                  placeholder="Role (e.g. Frontend)"
-                  required
-                  className="text-xs border rounded px-2 py-1"
-                />
-                <button
-                  type="submit"
-                  className="text-xs bg-black text-white px-3 py-1 rounded hover:bg-gray-800"
-                >
-                  Join
-                </button>
-              </form>
+              {session && (
+                <form action={joinProject} className="flex gap-2">
+                  <input type="hidden" name="projectId" value={project.id} />
+                  <input
+                    type="text"
+                    name="role"
+                    placeholder="Role (e.g. Backend Dev)"
+                    required
+                    className="text-xs border rounded px-2 py-1"
+                  />
+                  <button
+                    type="submit"
+                    className="text-xs bg-black text-white px-3 py-1 rounded hover:bg-gray-800"
+                  >
+                    Join Team
+                  </button>
+                </form>
+              )}
             </div>
           </div>
         ))}
