@@ -6,11 +6,20 @@ import { authOptions } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-export async function createProject(formData: FormData) {
+// Helper to get authenticated user
+async function getAuthUser() {
   const session = await getServerSession(authOptions);
   const githubUser = (session?.user as any)?.githubUser;
+  if (!githubUser) return null;
 
-  if (!githubUser) {
+  return await prisma.user.findUnique({
+    where: { githubUser },
+  });
+}
+
+export async function createProject(formData: FormData) {
+  const user = await getAuthUser();
+  if (!user) {
     throw new Error("You must be logged in with GitHub to create a project.");
   }
 
@@ -18,12 +27,6 @@ export async function createProject(formData: FormData) {
   const description = formData.get("description") as string;
   const techStack = formData.get("techStack") as string;
   const repoUrl = formData.get("repoUrl") as string;
-
-  const user = await prisma.user.findUnique({
-    where: { githubUser },
-  });
-
-  if (!user) throw new Error("User record not found.");
 
   await prisma.project.create({
     data: {
@@ -39,37 +42,104 @@ export async function createProject(formData: FormData) {
   redirect("/");
 }
 
-export async function joinProject(formData: FormData) {
-  const session = await getServerSession(authOptions);
-  const githubUser = (session?.user as any)?.githubUser;
-
-  if (!githubUser) {
-    throw new Error("You must be logged in to join projects.");
-  }
+// 1. Submit Join Request (Application)
+export async function applyToProject(formData: FormData) {
+  const user = await getAuthUser();
+  if (!user) throw new Error("You must be logged in.");
 
   const projectId = formData.get("projectId") as string;
-  const role = formData.get("role") as string;
+  const role = (formData.get("role") as string) || "Contributor";
+  const message = formData.get("message") as string;
 
-  const user = await prisma.user.findUnique({
-    where: { githubUser },
+  // Check if project exists and user isn't the owner
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
   });
 
-  if (!user) throw new Error("User not found.");
+  if (!project) throw new Error("Project not found.");
+  if (project.ownerId === user.id) throw new Error("You are the owner of this project.");
 
-  const existingMember = await prisma.projectMember.findFirst({
-    where: { userId: user.id, projectId },
-  });
-
-  if (!existingMember) {
-    await prisma.projectMember.create({
-      data: {
-        projectId,
+  // Create pending application
+  await prisma.application.upsert({
+    where: {
+      userId_projectId: {
         userId: user.id,
-        role: role || "Contributor",
+        projectId,
       },
-    });
-  }
+    },
+    update: {
+      role,
+      message,
+      status: "PENDING",
+    },
+    create: {
+      projectId,
+      userId: user.id,
+      role,
+      message,
+      status: "PENDING",
+    },
+  });
 
   revalidatePath("/");
-  revalidatePath(`/${githubUser}`);
+}
+
+// 2. Owner Approves Application
+export async function approveApplication(applicationId: string) {
+  const user = await getAuthUser();
+  if (!user) throw new Error("Unauthorized.");
+
+  const app = await prisma.application.findUnique({
+    where: { id: applicationId },
+    include: { project: true },
+  });
+
+  if (!app || app.project.ownerId !== user.id) {
+    throw new Error("Only the project owner can approve applications.");
+  }
+
+  await prisma.$transaction([
+    prisma.application.update({
+      where: { id: applicationId },
+      data: { status: "ACCEPTED" },
+    }),
+    prisma.projectMember.upsert({
+      where: {
+        userId_projectId: {
+          userId: app.userId,
+          projectId: app.projectId,
+        },
+      },
+      update: { role: app.role },
+      create: {
+        userId: app.userId,
+        projectId: app.projectId,
+        role: app.role,
+      },
+    }),
+  ]);
+
+  revalidatePath("/");
+}
+
+// 3. Owner Rejects Application
+export async function rejectApplication(applicationId: string) {
+  const user = await getAuthUser();
+  if (!user) throw new Error("Unauthorized.");
+
+  const app = await prisma.application.findUnique({
+    where: { id: applicationId },
+    include: { project: true },
+  });
+
+  if (!app || app.project.ownerId !== user.id) {
+    throw new Error("Only the project owner can reject applications.");
+  }
+
+  await prisma.application.update({
+    where: { id: applicationId },
+    data: { status: "REJECTED" },
+  });
+
+  revalidatePath("/");
 }
