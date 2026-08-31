@@ -1,6 +1,6 @@
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 generator client {
@@ -48,7 +48,7 @@ model Application {
   userId    String
   role      String
   message   String?
-  status    String   @default("PENDING") // PENDING, ACCEPTED, REJECTED
+  status    String   @default("PENDING")
   project   Project  @relation(fields: [projectId], references: [id])
   user      User     @relation(fields: [userId], references: [id])
   createdAt DateTime @default(now())
