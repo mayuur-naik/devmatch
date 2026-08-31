@@ -7,19 +7,13 @@ generator client {
   provider = "prisma-client-js"
 }
 
-enum ApplicationStatus {
-  PENDING
-  ACCEPTED
-  REJECTED
-}
-
 model User {
   id           String           @id @default(uuid())
   githubUser   String           @unique
   name         String?
   avatarUrl    String?
   projects     Project[]        @relation("Owner")
-  memberships  ProjectMember[]
+  joined       ProjectMember[]
   applications Application[]
   createdAt    DateTime         @default(now())
 }
@@ -49,15 +43,15 @@ model ProjectMember {
 }
 
 model Application {
-  id        String            @id @default(uuid())
+  id        String   @id @default(uuid())
   projectId String
   userId    String
   role      String
   message   String?
-  status    String            @default("PENDING") // PENDING, ACCEPTED, REJECTED
-  project   Project           @relation(fields: [projectId], references: [id])
-  user      User              @relation(fields: [userId], references: [id])
-  createdAt DateTime          @default(now())
+  status    String   @default("PENDING") // PENDING, ACCEPTED, REJECTED
+  project   Project  @relation(fields: [projectId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
 
   @@unique([userId, projectId])
 }
