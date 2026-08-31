@@ -61,7 +61,7 @@ export default async function HomePage() {
           <p className="text-gray-500">No projects yet. Sign in to post the first one!</p>
         )}
 
-        {projects.map((project) => (
+        {projects.map((project: any) => (
           <div key={project.id} className="border rounded-lg p-5 shadow-sm space-y-4">
             <div className="flex justify-between items-start">
               <div>
@@ -86,7 +86,7 @@ export default async function HomePage() {
             <p className="text-gray-700">{project.description}</p>
 
             <div className="flex flex-wrap gap-2">
-              {project.techStack.split(",").map((tech, i) => (
+              {project.techStack.split(",").map((tech: string, i: number) => (
                 <span key={i} className="bg-gray-100 text-xs px-2.5 py-1 rounded-full font-medium">
                   {tech.trim()}
                 </span>
@@ -96,7 +96,7 @@ export default async function HomePage() {
             <div className="border-t pt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="text-xs text-gray-500">
                 <strong>Contributors ({project.members.length}):</strong>{" "}
-                {project.members.map((m) => `@${m.user.githubUser}`).join(", ") || "None yet"}
+                {project.members.map((m: any) => `@${m.user.githubUser}`).join(", ") || "None yet"}
               </div>
 
               {session && (

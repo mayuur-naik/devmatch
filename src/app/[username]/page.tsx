@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma";
-import { notFound } from "next/navigation";
 import Link from "next/link";
 
 interface Props {
@@ -42,7 +41,7 @@ export default async function ProfilePage({ params }: Props) {
           <p className="text-sm text-gray-500">Has not posted any projects.</p>
         ) : (
           <div className="grid gap-3">
-            {user.projects.map((p) => (
+            {user.projects.map((p: any) => (
               <div key={p.id} className="border p-4 rounded space-y-1">
                 <div className="flex justify-between items-center">
                   <h3 className="font-semibold">{p.title}</h3>
@@ -65,7 +64,7 @@ export default async function ProfilePage({ params }: Props) {
           <p className="text-sm text-gray-500">Has not joined any external projects yet.</p>
         ) : (
           <div className="grid gap-3">
-            {user.joined.map((membership) => (
+            {user.joined.map((membership: any) => (
               <div key={membership.id} className="border p-4 rounded bg-gray-50 space-y-1">
                 <div className="flex justify-between items-center">
                   <h3 className="font-semibold">{membership.project.title}</h3>
