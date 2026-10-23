@@ -1,326 +1,679 @@
-import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { applyToProject, approveApplication, rejectApplication } from "./actions";
+import type { Metadata } from "next";
 import Link from "next/link";
+import { notFound } from "next/navigation";
+import { getServerSession } from "next-auth";
+import { prisma } from "@/lib/prisma";
+import { authOptions } from "@/lib/auth";
+import { addProjectUpdate, applyToProject } from "@/app/actions";
 
 export const dynamic = "force-dynamic";
 
-export default async function HomePage() {
-  const session = await getServerSession(authOptions);
-  const currentGithubUser = (session?.user as any)?.githubUser;
+/* -------------------------------------------------------------------------- */
+/*  Types & data access                                                       */
+/* -------------------------------------------------------------------------- */
 
-  const projects = await prisma.project.findMany({
+// `params` is a Promise in Next.js 15+. Awaiting it is also harmless on 14.
+type PageProps = {
+  params: Promise<{ id: string }>;
+};
+
+async function getViewer() {
+  const session = await getServerSession(authOptions);
+  const githubUser = (session?.user as { githubUser?: string } | undefined)?.githubUser;
+  if (!githubUser) return null;
+
+  return prisma.user.findUnique({ where: { githubUser } });
+}
+
+/**
+ * Only the viewer's OWN application is loaded, so other applicants'
+ * messages are never sent to the page.
+ */
+async function getProject(id: string, viewerId: string | null) {
+  return prisma.project.findUnique({
+    where: { id },
     include: {
       owner: true,
-      members: { include: { user: true } },
-      applications: { include: { user: true } },
+      members: {
+        include: { user: true },
+        orderBy: { user: { githubUser: "asc" } },
+      },
+      applications: {
+        where: { userId: viewerId ?? "" },
+      },
+      updates: {
+        orderBy: { createdAt: "desc" },
+        include: { author: true },
+      },
     },
-    orderBy: { createdAt: "desc" },
+  });
+}
+
+type ProjectData = NonNullable<Awaited<ReturnType<typeof getProject>>>;
+type Viewer = NonNullable<Awaited<ReturnType<typeof getViewer>>>;
+type MemberData = ProjectData["members"][number];
+type UpdateData = ProjectData["updates"][number];
+type ApplicationData = ProjectData["applications"][number];
+
+/* -------------------------------------------------------------------------- */
+/*  Helpers                                                                   */
+/* -------------------------------------------------------------------------- */
+
+function parseTechStack(techStack: string): string[] {
+  return techStack
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+}
+
+/** Only allow http(s) links so a stored `javascript:` URL can never be rendered as an href. */
+function safeExternalUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:"
+      ? parsed.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function getInitials(name: string | null, githubUser: string): string {
+  const source = (name?.trim() || githubUser).replace(/^@/, "");
+  const parts = source.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return source.slice(0, 2).toUpperCase();
+}
+
+function formatDate(date: Date): string {
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function profileHref(githubUser: string): string {
+  return `/${encodeURIComponent(githubUser)}`;
+}
+
+function plural(count: number, singular: string): string {
+  return count === 1 ? singular : `${singular}s`;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Metadata                                                                  */
+/* -------------------------------------------------------------------------- */
+
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { id } = await params;
+
+  const project = await prisma.project.findUnique({
+    where: { id },
+    select: { title: true, description: true },
   });
 
+  if (!project) {
+    return { title: "Project not found | DevMatch" };
+  }
+
+  return {
+    title: `${project.title} | DevMatch`,
+    description: project.description.slice(0, 160),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Page                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export default async function ProjectPage({ params }: PageProps) {
+  const { id } = await params;
+
+  const viewer = await getViewer();
+  const project = await getProject(id, viewer?.id ?? null);
+
+  if (!project) {
+    notFound();
+  }
+
+  const isOwner = viewer?.id === project.ownerId;
+  const membership = viewer
+    ? project.members.find((member) => member.userId === viewer.id) ?? null
+    : null;
+  const application = project.applications[0] ?? null;
+  const canPostUpdates = isOwner || membership !== null;
+
+  const pendingCount = isOwner
+    ? await prisma.application.count({
+        where: { projectId: project.id, status: "PENDING" },
+      })
+    : 0;
+
+  // Used to label each update's author with their role on this project.
+  const roleByUserId = new Map<string, string>(
+    project.members.map((member) => [member.userId, member.role])
+  );
+  roleByUserId.set(project.ownerId, "Founder");
+
+  const repoHref = safeExternalUrl(project.repoUrl);
+  const teamSize = project.members.length + 1; // members + founder
+
   return (
-    <div className="min-h-screen pb-20">
-      {/* Sticky Glass Navbar */}
-      <header className="sticky top-0 z-50 border-b border-zinc-800/80 bg-zinc-950/70 backdrop-blur-xl">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-3 group">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-tr from-zinc-800 to-zinc-700 border border-zinc-700/80 flex items-center justify-center shadow-inner group-hover:border-zinc-500 transition-colors">
-              <svg className="w-4 h-4 text-zinc-100" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-              </svg>
-            </div>
-            <div>
-              <span className="font-semibold text-sm tracking-tight text-zinc-100 flex items-center gap-1.5">
-                DevMatch
-                <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-zinc-800/90 text-zinc-400 border border-zinc-700/50">Beta</span>
-              </span>
-            </div>
-          </Link>
+    <main className="mx-auto max-w-4xl space-y-8 px-4 py-8 sm:px-6">
+      <Link
+        href="/"
+        className="inline-flex items-center text-sm font-medium text-blue-600 hover:text-blue-700 hover:underline"
+      >
+        ← Back to Feed
+      </Link>
 
-          <div className="flex items-center gap-2.5 sm:gap-3">
-            {session ? (
-              <>
-                <Link
-                  href={`/${currentGithubUser}`}
-                  className="hidden sm:inline-flex items-center gap-1.5 text-xs font-mono px-2.5 py-1.5 rounded-md text-zinc-300 hover:text-white bg-zinc-900 border border-zinc-800 hover:border-zinc-700 transition-colors"
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-                  @{currentGithubUser}
-                </Link>
-
-                <Link
-                  href="/projects/new"
-                  className="inline-flex items-center gap-1.5 text-xs font-medium bg-zinc-100 hover:bg-white text-zinc-900 px-3.5 py-1.5 rounded-lg shadow-sm hover:shadow transition-all"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                  </svg>
-                  <span>Post Project</span>
-                </Link>
-
-                <a
-                  href="/api/auth/signout"
-                  className="text-xs text-zinc-400 hover:text-zinc-200 px-2.5 py-1.5 rounded-lg border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900 transition-all"
-                >
-                  Sign Out
-                </a>
-              </>
-            ) : (
-              <a
-                href="/api/auth/signin/github"
-                className="inline-flex items-center gap-2 text-xs font-medium bg-zinc-100 hover:bg-white text-zinc-950 px-3.5 py-1.5 rounded-lg shadow-sm transition-all"
+      {/* ------------------------------ Header ------------------------------ */}
+      <header className="space-y-5 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 space-y-2">
+            <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">{project.title}</h1>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-500">
+              <Link
+                href={profileHref(project.owner.githubUser)}
+                className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 py-1 pl-1 pr-3 font-medium text-gray-700 transition hover:bg-gray-200"
               >
-                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-                  <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
-                </svg>
-                <span>Continue with GitHub</span>
-              </a>
-            )}
+                <SmallAvatar
+                  avatarUrl={project.owner.avatarUrl}
+                  initials={getInitials(project.owner.name, project.owner.githubUser)}
+                  size="sm"
+                />
+                <span>@{project.owner.githubUser}</span>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                  Owner
+                </span>
+              </Link>
+              <span>Created {formatDate(project.createdAt)}</span>
+            </div>
           </div>
+
+          {repoHref ? (
+            <a
+              href={repoHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex shrink-0 items-center justify-center gap-1 rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-700"
+            >
+              GitHub Repo ↗
+            </a>
+          ) : (
+            <span className="text-xs text-gray-400">Repository unavailable</span>
+          )}
         </div>
+
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700 sm:text-base">
+          {project.description}
+        </p>
+
+        <TechTags techStack={project.techStack} />
       </header>
 
-      {/* Main Content Area */}
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-10 sm:pt-14 space-y-10">
-        {/* Hero Section */}
-        <section className="space-y-3">
-          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-zinc-800 bg-zinc-900/60 text-[11px] font-mono text-zinc-400">
-            <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            Active Ecosystem Discovery
-          </div>
-          <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-zinc-100">
-            Find collaborators. Ship fast.<br />
-            <span className="text-zinc-500 font-normal">Build verified proof-of-work.</span>
-          </h1>
-          <p className="text-sm sm:text-base text-zinc-400 max-w-2xl font-light leading-relaxed">
-            Discover open-source and side-project teams looking for builders. Join roles, submit PRs, and cement your contributions on your developer profile.
+      {/* ----------------------- Join Action / Status ----------------------- */}
+      <JoinPanel
+        projectId={project.id}
+        viewer={viewer}
+        isOwner={isOwner}
+        membership={membership}
+        application={application}
+        pendingCount={pendingCount}
+      />
+
+      {/* --------------------------- Team / Contributors --------------------------- */}
+      <section aria-labelledby="team-heading" className="space-y-4">
+        <SectionHeading
+          id="team-heading"
+          title="Team"
+          subtitle="The founder and approved contributors."
+          count={teamSize}
+        />
+
+        <ul className="grid gap-3 sm:grid-cols-2">
+          <li>
+            <TeamCard
+              githubUser={project.owner.githubUser}
+              name={project.owner.name}
+              avatarUrl={project.owner.avatarUrl}
+              role="Founder"
+              highlight
+            />
+          </li>
+          {project.members.map((member: MemberData) => (
+            <li key={member.id}>
+              <TeamCard
+                githubUser={member.user.githubUser}
+                name={member.user.name}
+                avatarUrl={member.user.avatarUrl}
+                role={member.role}
+              />
+            </li>
+          ))}
+        </ul>
+
+        {project.members.length === 0 && (
+          <p className="text-sm text-gray-500">
+            No contributors have joined yet. Roles are added as the founder approves applications.
           </p>
-        </section>
+        )}
+      </section>
 
-        {/* Project Feed Section */}
-        <section className="space-y-5">
-          <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
-            <div className="flex items-center gap-2">
-              <h2 className="text-xs uppercase tracking-wider font-mono font-medium text-zinc-400">
-                Explore Open Projects
-              </h2>
-              <span className="text-[11px] font-mono px-1.5 py-0.5 rounded-md bg-zinc-900 text-zinc-400 border border-zinc-800">
-                {projects.length}
-              </span>
+      {/* --------------------------- Activity Feed --------------------------- */}
+      <section aria-labelledby="activity-heading" className="space-y-4">
+        <SectionHeading
+          id="activity-heading"
+          title="Activity & Progress"
+          subtitle="Updates posted by the team, newest first."
+          count={project.updates.length}
+        />
+
+        {canPostUpdates && (
+          <form
+            action={addProjectUpdate}
+            className="space-y-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+          >
+            <input type="hidden" name="projectId" value={project.id} />
+            <label htmlFor="update-content" className="block text-sm font-medium text-gray-900">
+              Post a progress update
+            </label>
+            <textarea
+              id="update-content"
+              name="content"
+              required
+              maxLength={2000}
+              rows={3}
+              placeholder="What did the team ship, fix, or learn?"
+              className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-400">Up to 2,000 characters.</span>
+              <button
+                type="submit"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
+              >
+                Post update
+              </button>
             </div>
-          </div>
+          </form>
+        )}
 
-          {projects.length === 0 ? (
-            <div className="border border-dashed border-zinc-800 rounded-2xl p-12 text-center space-y-4 bg-zinc-900/20">
-              <div className="h-10 w-10 mx-auto rounded-full bg-zinc-800/60 flex items-center justify-center text-zinc-400 border border-zinc-700/50">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                </svg>
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-zinc-200">No projects posted yet</p>
-                <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-                  Be the first developer to start a collaborative initiative and assemble your team.
-                </p>
-              </div>
-              {session && (
-                <Link
-                  href="/projects/new"
-                  className="inline-flex items-center gap-1 text-xs font-medium bg-zinc-100 text-zinc-950 px-3 py-1.5 rounded-lg hover:bg-white transition-all"
-                >
-                  + Post the First Project
-                </Link>
-              )}
-            </div>
-          ) : (
-            <div className="grid gap-5">
-              {projects.map((project: any) => {
-                const isOwner = currentGithubUser === project.owner.githubUser;
-                const isMember = project.members.some((m: any) => m.user.githubUser === currentGithubUser);
-                const userApplication = project.applications.find((a: any) => a.user.githubUser === currentGithubUser);
-                const pendingApplications = project.applications.filter((a: any) => a.status === "PENDING");
+        {project.updates.length === 0 ? (
+          <EmptyState
+            icon="📝"
+            title="No updates yet"
+            description={
+              canPostUpdates
+                ? "Share the first progress update to show what the team is building."
+                : "The team hasn't posted any progress updates yet."
+            }
+          />
+        ) : (
+          <ol className="relative space-y-6 border-l-2 border-gray-200 pl-6">
+            {project.updates.map((update: UpdateData) => (
+              <li key={update.id} className="relative">
+                <span
+                  aria-hidden="true"
+                  className="absolute -left-[33px] top-1.5 h-3 w-3 rounded-full border-2 border-white bg-blue-500 ring-2 ring-blue-200"
+                />
+                <UpdateCard
+                  update={update}
+                  authorRole={roleByUserId.get(update.authorId) ?? null}
+                />
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+    </main>
+  );
+}
 
-                return (
-                  <article
-                    key={project.id}
-                    className="group relative rounded-2xl border border-zinc-800/80 bg-zinc-900/40 hover:bg-zinc-900/70 hover:border-zinc-700/80 transition-all duration-300 p-6 space-y-5 backdrop-blur-sm"
-                  >
-                    {/* Top Row: Title, Owner & GitHub Link */}
-                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-3">
-                          <h3 className="text-lg font-semibold tracking-tight text-zinc-100 group-hover:text-white transition-colors">
-                            {project.title}
-                          </h3>
-                        </div>
-                        <p className="text-xs text-zinc-400 flex items-center gap-1.5">
-                          <span>Created by</span>
-                          <Link
-                            href={`/${project.owner.githubUser}`}
-                            className="font-mono text-zinc-300 hover:text-white underline underline-offset-4 decoration-zinc-700 hover:decoration-zinc-400 transition-colors"
-                          >
-                            @{project.owner.githubUser}
-                          </Link>
-                        </p>
-                      </div>
+/* -------------------------------------------------------------------------- */
+/*  Join panel                                                                */
+/* -------------------------------------------------------------------------- */
 
-                      {project.repoUrl && (
-                        <a
-                          href={project.repoUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1.5 text-xs font-mono text-zinc-300 bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 px-3 py-1.5 rounded-lg transition-all w-fit self-start"
-                        >
-                          <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-                            <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
-                          </svg>
-                          <span>Repository</span>
-                          <span className="text-zinc-500">↗</span>
-                        </a>
-                      )}
-                    </div>
+function JoinPanel({
+  projectId,
+  viewer,
+  isOwner,
+  membership,
+  application,
+  pendingCount,
+}: {
+  projectId: string;
+  viewer: Viewer | null;
+  isOwner: boolean;
+  membership: MemberData | null;
+  application: ApplicationData | null;
+  pendingCount: number;
+}) {
+  if (isOwner) {
+    return (
+      <Banner tone="amber" icon="👑" title="You own this project">
+        {pendingCount > 0 ? (
+          <>
+            You have <strong>{pendingCount}</strong> pending join{" "}
+            {plural(pendingCount, "request")}. Review them from the{" "}
+            <Link href="/" className="font-medium underline">
+              homepage
+            </Link>
+            .
+          </>
+        ) : (
+          "No pending join requests right now."
+        )}
+      </Banner>
+    );
+  }
 
-                    {/* Description */}
-                    <p className="text-sm text-zinc-300 leading-relaxed font-light">
-                      {project.description}
-                    </p>
+  if (membership) {
+    return (
+      <Banner tone="green" icon="✓" title="You're on the team">
+        You joined as <strong>{membership.role}</strong>. You can post progress updates below.
+      </Banner>
+    );
+  }
 
-                    {/* Tech Stack Pills */}
-                    <div className="flex flex-wrap gap-1.5">
-                      {project.techStack.split(",").map((tech: string, i: number) => (
-                        <span
-                          key={i}
-                          className="text-[11px] font-mono px-2.5 py-1 rounded-md bg-zinc-950/60 border border-zinc-800 text-zinc-400"
-                        >
-                          {tech.trim()}
-                        </span>
-                      ))}
-                    </div>
+  if (!viewer) {
+    return (
+      <Banner tone="gray" icon="🔒" title="Want to contribute?">
+        <a
+          href={`/api/auth/signin?callbackUrl=${encodeURIComponent(`/projects/${projectId}`)}`}
+          className="font-medium text-blue-600 underline"
+        >
+          Sign in with GitHub
+        </a>{" "}
+        to apply for a role on this project.
+      </Banner>
+    );
+  }
 
-                    {/* Team & Application Row */}
-                    <div className="border-t border-zinc-800/60 pt-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                      {/* Contributors listing */}
-                      <div className="flex items-center gap-2 text-xs text-zinc-400">
-                        <span className="font-mono text-zinc-500 uppercase text-[10px] tracking-wider">
-                          Builders ({project.members.length}):
-                        </span>
-                        {project.members.length > 0 ? (
-                          <div className="flex flex-wrap gap-1.5">
-                            {project.members.map((m: any, idx: number) => (
-                              <span
-                                key={idx}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-800/40 border border-zinc-800 text-zinc-300 text-[11px] font-mono"
-                              >
-                                @{m.user.githubUser}
-                                <span className="text-zinc-500 text-[10px]">({m.role})</span>
-                              </span>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="text-zinc-600 italic">No contributors yet</span>
-                        )}
-                      </div>
+  if (application?.status === "PENDING") {
+    return (
+      <Banner tone="blue" icon="⏳" title="Application pending">
+        Your request to join as <strong>{application.role}</strong> is waiting for the
+        founder&apos;s review.
+      </Banner>
+    );
+  }
 
-                      {/* User Actions / Status */}
-                      {session && (
-                        <div className="flex items-center justify-start md:justify-end">
-                          {isOwner ? (
-                            <span className="text-xs font-mono font-medium px-2.5 py-1 rounded-md bg-zinc-800 text-zinc-300 border border-zinc-700/60 flex items-center gap-1.5">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400"></span>
-                              Project Owner
-                            </span>
-                          ) : isMember ? (
-                            <span className="text-xs font-mono font-medium px-2.5 py-1 rounded-md bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 flex items-center gap-1.5">
-                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-                              Active Member
-                            </span>
-                          ) : userApplication?.status === "PENDING" ? (
-                            <span className="text-xs font-mono font-medium px-2.5 py-1 rounded-md bg-amber-950/60 text-amber-300 border border-amber-800/60 flex items-center gap-1.5">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                              Request Pending
-                            </span>
-                          ) : (
-                            <form action={applyToProject} className="flex items-center gap-2 w-full sm:w-auto">
-                              <input type="hidden" name="projectId" value={project.id} />
-                              <input
-                                type="text"
-                                name="role"
-                                placeholder="Role (e.g. Frontend, Rust Dev)"
-                                required
-                                className="text-xs font-mono bg-zinc-950 border border-zinc-800 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-1.5 focus:outline-none focus:border-zinc-600 transition-colors w-full sm:w-56"
-                              />
-                              <button
-                                type="submit"
-                                className="text-xs font-medium whitespace-nowrap bg-zinc-100 hover:bg-white text-zinc-900 px-3 py-1.5 rounded-lg shadow-sm transition-all"
-                              >
-                                Join
-                              </button>
-                            </form>
-                          )}
-                        </div>
-                      )}
-                    </div>
+  return (
+    <section
+      aria-labelledby="apply-heading"
+      className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm"
+    >
+      <div className="space-y-1">
+        <h2 id="apply-heading" className="text-lg font-bold text-gray-900">
+          Join this project
+        </h2>
+        {application?.status === "REJECTED" ? (
+          <p className="text-sm text-red-600">
+            Your previous application as <strong>{application.role}</strong> wasn&apos;t accepted.
+            You&apos;re welcome to apply again with a different role or message.
+          </p>
+        ) : (
+          <p className="text-sm text-gray-500">
+            Tell the founder which role you&apos;d like to take on.
+          </p>
+        )}
+      </div>
 
-                    {/* Owner Approval Panel */}
-                    {isOwner && pendingApplications.length > 0 && (
-                      <div className="border-t border-zinc-800/80 -mx-6 -mb-6 p-5 rounded-b-2xl bg-zinc-950/80 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-xs font-mono font-medium uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
-                            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
-                            Pending Join Requests ({pendingApplications.length})
-                          </p>
-                        </div>
+      <form action={applyToProject} className="space-y-3">
+        <input type="hidden" name="projectId" value={projectId} />
 
-                        <div className="grid gap-2">
-                          {pendingApplications.map((app: any) => (
-                            <div
-                              key={app.id}
-                              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/90 border border-zinc-800 p-3 rounded-xl text-xs"
-                            >
-                              <div className="flex items-center gap-2">
-                                <Link
-                                  href={`/${app.user.githubUser}`}
-                                  className="font-mono font-medium text-zinc-200 hover:text-white underline underline-offset-4 decoration-zinc-700"
-                                >
-                                  @{app.user.githubUser}
-                                </Link>
-                                <span className="text-zinc-500">•</span>
-                                <span className="text-zinc-400 font-mono">
-                                  Role: <strong className="text-zinc-200 font-medium">{app.role}</strong>
-                                </span>
-                              </div>
+        <div className="space-y-1">
+          <label htmlFor="apply-role" className="block text-sm font-medium text-gray-900">
+            Role
+          </label>
+          <input
+            id="apply-role"
+            name="role"
+            type="text"
+            required
+            maxLength={60}
+            placeholder="e.g. Frontend Engineer"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+          />
+        </div>
 
-                              <div className="flex items-center gap-2 self-end sm:self-auto">
-                                <form action={approveApplication.bind(null, app.id)}>
-                                  <button
-                                    type="submit"
-                                    className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 px-3 py-1 rounded-lg text-xs font-medium transition-all"
-                                  >
-                                    Approve
-                                  </button>
-                                </form>
-                                <form action={rejectApplication.bind(null, app.id)}>
-                                  <button
-                                    type="submit"
-                                    className="bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 px-3 py-1 rounded-lg text-xs font-medium transition-all"
-                                  >
-                                    Decline
-                                  </button>
-                                </form>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      </main>
+        <div className="space-y-1">
+          <label htmlFor="apply-message" className="block text-sm font-medium text-gray-900">
+            Message <span className="font-normal text-gray-400">(optional)</span>
+          </label>
+          <textarea
+            id="apply-message"
+            name="message"
+            rows={3}
+            maxLength={1000}
+            placeholder="Why are you a good fit? Link relevant work."
+            className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+          />
+        </div>
+
+        <button
+          type="submit"
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
+        >
+          Send join request
+        </button>
+      </form>
+    </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Presentational components                                                 */
+/* -------------------------------------------------------------------------- */
+
+const bannerTones = {
+  amber: "border-amber-200 bg-amber-50 text-amber-900",
+  green: "border-green-200 bg-green-50 text-green-900",
+  blue: "border-blue-200 bg-blue-50 text-blue-900",
+  gray: "border-gray-200 bg-gray-50 text-gray-800",
+} as const;
+
+function Banner({
+  tone,
+  icon,
+  title,
+  children,
+}: {
+  tone: keyof typeof bannerTones;
+  icon: string;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      role="status"
+      className={`flex items-start gap-3 rounded-xl border px-5 py-4 ${bannerTones[tone]}`}
+    >
+      <span className="text-xl leading-none" aria-hidden="true">
+        {icon}
+      </span>
+      <div className="space-y-0.5">
+        <p className="text-sm font-semibold">{title}</p>
+        <p className="text-sm">{children}</p>
+      </div>
     </div>
+  );
+}
+
+function SmallAvatar({
+  avatarUrl,
+  initials,
+  size,
+}: {
+  avatarUrl: string | null;
+  initials: string;
+  size: "sm" | "md";
+}) {
+  const dimension = size === "sm" ? "h-6 w-6 text-[10px]" : "h-10 w-10 text-sm";
+  const pixels = size === "sm" ? 24 : 40;
+
+  if (avatarUrl) {
+    return (
+      // Plain <img> avoids needing next/image remotePatterns for avatars.githubusercontent.com
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={avatarUrl}
+        alt=""
+        width={pixels}
+        height={pixels}
+        className={`${dimension} shrink-0 rounded-full object-cover ring-1 ring-gray-200`}
+      />
+    );
+  }
+
+  return (
+    <span
+      aria-hidden="true"
+      className={`${dimension} flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 font-bold text-white`}
+    >
+      {initials}
+    </span>
+  );
+}
+
+function TechTags({ techStack }: { techStack: string }) {
+  const tags = parseTechStack(techStack);
+
+  if (tags.length === 0) return null;
+
+  return (
+    <ul className="flex flex-wrap gap-1.5" aria-label="Tech stack">
+      {tags.map((tag) => (
+        <li
+          key={tag}
+          className="rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700"
+        >
+          {tag}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SectionHeading({
+  id,
+  title,
+  subtitle,
+  count,
+}: {
+  id: string;
+  title: string;
+  subtitle: string;
+  count: number;
+}) {
+  return (
+    <div className="border-b border-gray-200 pb-3">
+      <div className="flex items-center gap-2">
+        <h2 id={id} className="text-xl font-bold text-gray-900">
+          {title}
+        </h2>
+        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">
+          {count}
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-gray-500">{subtitle}</p>
+    </div>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  description,
+}: {
+  icon: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-6 py-10 text-center">
+      <div className="text-3xl" aria-hidden="true">
+        {icon}
+      </div>
+      <h3 className="mt-2 text-sm font-semibold text-gray-900">{title}</h3>
+      <p className="mx-auto mt-1 max-w-md text-sm text-gray-500">{description}</p>
+    </div>
+  );
+}
+
+function TeamCard({
+  githubUser,
+  name,
+  avatarUrl,
+  role,
+  highlight = false,
+}: {
+  githubUser: string;
+  name: string | null;
+  avatarUrl: string | null;
+  role: string;
+  highlight?: boolean;
+}) {
+  return (
+    <Link
+      href={profileHref(githubUser)}
+      className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 hover:shadow-md"
+    >
+      <SmallAvatar avatarUrl={avatarUrl} initials={getInitials(name, githubUser)} size="md" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-semibold text-gray-900">{name?.trim() || githubUser}</p>
+        <p className="truncate text-xs text-gray-500">@{githubUser}</p>
+      </div>
+      <span
+        className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${
+          highlight
+            ? "bg-amber-50 text-amber-800 ring-amber-600/20"
+            : "bg-blue-50 text-blue-700 ring-blue-600/20"
+        }`}
+      >
+        {role}
+      </span>
+    </Link>
+  );
+}
+
+function UpdateCard({
+  update,
+  authorRole,
+}: {
+  update: UpdateData;
+  authorRole: string | null;
+}) {
+  const author = update.author;
+
+  return (
+    <article className="space-y-2 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <SmallAvatar
+          avatarUrl={author.avatarUrl}
+          initials={getInitials(author.name, author.githubUser)}
+          size="sm"
+        />
+        <Link
+          href={profileHref(author.githubUser)}
+          className="text-sm font-semibold text-gray-900 hover:underline"
+        >
+          @{author.githubUser}
+        </Link>
+        {authorRole && (
+          <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">
+            {authorRole}
+          </span>
+        )}
+        <time dateTime={update.createdAt.toISOString()} className="ml-auto text-xs text-gray-400">
+          {formatDate(update.createdAt)}
+        </time>
+      </header>
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">{update.content}</p>
+    </article>
   );
 }

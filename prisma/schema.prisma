@@ -8,38 +8,38 @@ generator client {
 }
 
 model User {
-  id           String           @id @default(uuid())
-  githubUser   String           @unique
+  id           String          @id @default(uuid())
+  githubUser   String          @unique
   name         String?
   avatarUrl    String?
-  projects     Project[]        @relation("Owner")
+  projects     Project[]       @relation("Owner")
   joined       ProjectMember[]
   applications Application[]
-  createdAt    DateTime         @default(now())
   updates      ProjectUpdate[]
+  createdAt    DateTime        @default(now())
 }
 
 model Project {
-  id           String           @id @default(uuid())
+  id           String          @id @default(uuid())
   title        String
   description  String
   techStack    String
   repoUrl      String
   ownerId      String
-  owner        User             @relation("Owner", fields: [ownerId], references: [id])
+  owner        User            @relation("Owner", fields: [ownerId], references: [id])
   members      ProjectMember[]
   applications Application[]
-  createdAt    DateTime         @default(now())
   updates      ProjectUpdate[]
+  createdAt    DateTime        @default(now())
 }
 
 model ProjectMember {
-  id        String   @id @default(uuid())
+  id        String  @id @default(uuid())
   userId    String
   projectId String
   role      String
-  user      User     @relation(fields: [userId], references: [id])
-  project   Project  @relation(fields: [projectId], references: [id])
+  user      User    @relation(fields: [userId], references: [id])
+  project   Project @relation(fields: [projectId], references: [id])
 
   @@unique([userId, projectId])
 }
@@ -59,11 +59,13 @@ model Application {
 }
 
 model ProjectUpdate {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
+  projectId String
+  authorId  String
   content   String
   createdAt DateTime @default(now())
-  projectId String
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  authorId  String
-  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id])
+
+  @@index([projectId, createdAt])
 }
