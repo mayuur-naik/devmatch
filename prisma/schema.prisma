@@ -55,3 +55,13 @@ model Application {
 
   @@unique([userId, projectId])
 }
+
+model ProjectUpdate {
+  id        String   @id @default(cuid())
+  content   String
+  createdAt DateTime @default(now())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+}
