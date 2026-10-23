@@ -16,6 +16,7 @@ model User {
   joined       ProjectMember[]
   applications Application[]
   createdAt    DateTime         @default(now())
+  updates      ProjectUpdate[]
 }
 
 model Project {
@@ -29,6 +30,7 @@ model Project {
   members      ProjectMember[]
   applications Application[]
   createdAt    DateTime         @default(now())
+  updates      ProjectUpdate[]
 }
 
 model ProjectMember {
