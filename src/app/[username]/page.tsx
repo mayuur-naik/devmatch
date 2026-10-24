@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { Prisma } from "@prisma/client";
+import type { User, Project, ProjectMember, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -40,13 +40,6 @@ type Membership = ProfileUser["joined"][number];
 /* -------------------------------------------------------------------------- */
 /*  Helpers                                                                   */
 /* -------------------------------------------------------------------------- */
-
-function parseTechStack(techStack: string): string[] {
-  return techStack
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter((tag) => tag.length > 0);
-}
 
 function safeExternalUrl(url: string): string | null {
   try {
@@ -118,9 +111,9 @@ export default async function ProfilePage({ params }: PageProps) {
 
   const displayName = user.name?.trim() || user.githubUser;
   const contributorsOnboarded = user.projects.reduce(
-    (total, project) => total + project._count.members,
-    0
-  );
+  (total: number, project: any) => total + (project._count?.members || 0),
+  0
+);
 
   return (
     <div className="min-h-screen pb-20">
@@ -199,7 +192,7 @@ export default async function ProfilePage({ params }: PageProps) {
             />
           ) : (
             <ul className="grid gap-4">
-              {user.joined.map((membership) => (
+              {user.joined.map((membership: any) => (
                 <li key={membership.id}>
                   <JoinedProjectCard membership={membership} />
                 </li>
@@ -224,7 +217,7 @@ export default async function ProfilePage({ params }: PageProps) {
             />
           ) : (
             <ul className="grid gap-4">
-              {user.projects.map((project) => (
+              {user.projects.map((project: any) => (
                 <li key={project.id}>
                   <OwnedProjectCard project={project} />
                 </li>
@@ -326,7 +319,17 @@ function EmptyState({
   );
 }
 
-function TechTags({ techStack }: { techStack: string }) {
+function parseTechStack(techStack: string | string[]): string[] {
+  if (Array.isArray(techStack)) {
+    return techStack.flatMap((t) => t.split(",")).map((tag) => tag.trim()).filter(Boolean);
+  }
+  return techStack
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+}
+
+function TechTags({ techStack }: { techStack: string | string[] }) {
   const tags = parseTechStack(techStack);
 
   if (tags.length === 0) return null;
